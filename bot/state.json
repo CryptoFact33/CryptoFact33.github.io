@@ -1,0 +1,20 @@
+{
+  "alerts_enabled": true,
+  "watched_wallets": [],
+  "deploy_status": "mainnet",
+  "last_pipeline": null,
+  "cold_address": "0xCaa665DEcb18A3308B155bE2Af61891AabfC4E72",
+  "pool_token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  "contracts": {
+    "account": "0x512a5f83C877e3ec34c0A6e2B0Ef5B6cc55bAA79",
+    "relayer": "0x24fc9ECD332d026C7781A297b0BdD419caF0B61c",
+    "verifier": "0xEB5288ab805f1B279FE951b352F8Eab5406754a4",
+    "hasher": "0xf6295a59D0ddDE1b8015df38569F658ee7679318",
+    "fragmenter": "0x8bECe22F6dFe2fd21dF1d1e1A5Af0CB5e40F9e21",
+    "bridge": "0xfF06ade2137Cdfc2CdC5e6778486630f0Fac2691",
+    "zkPool": "0x50c1A436568DF05B0b0126B8203F939838c4C9e3",
+    "settler": "0x79575FBb4af8f3709773a307888A9624E39859b1",
+    "handler": "0xc11A41eCa5B34Cc34892f8AEA16aAd9b675F35D2"
+  },
+  "pending_settles": []
+}
