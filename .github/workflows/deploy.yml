@@ -1,0 +1,57 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build
+        env:
+          VITE_REOWN_PROJECT_ID: e3f7b70e6a6b66089bfc18885f381299
+          VITE_TARGET_CHAIN_ID: "8453"
+          VITE_HANDLER_ADDRESS: "0xc11A41eCa5B34Cc34892f8AEA16aAd9b675F35D2"
+          VITE_FRAGMENTER_ADDRESS: "0x8bECe22F6dFe2fd21dF1d1e1A5Af0CB5e40F9e21"
+          VITE_BRIDGE_ADDRESS: "0xfF06ade2137Cdfc2CdC5e6778486630f0Fac2691"
+          VITE_ZKPOOL_ADDRESS: "0x50c1A436568DF05B0b0126B8203F939838c4C9e3"
+          VITE_SETTLER_ADDRESS: "0x79575FBb4af8f3709773a307888A9624E39859b1"
+          VITE_POOL_TOKEN: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+          VITE_ACCOUNT_ADDRESS: "0x512a5f83C877e3ec34c0A6e2B0Ef5B6cc55bAA79"
+          VITE_RELAYER_ADDRESS: "0x24fc9ECD332d026C7781A297b0BdD419caF0B61c"
+          VITE_COLD_ADDRESS: "0xCaa665DEcb18A3308B155bE2Af61891AabfC4E72"
+        run: npm run build
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
